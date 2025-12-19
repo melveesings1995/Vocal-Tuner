@@ -52,12 +52,12 @@
   </label>
   <div id="vocalControls" class="hidden">
     <button onclick="initMic()" style="background:#0ff; color:#000;">🎤 Enable Microphone</button>
-    <button onclick="nextVocalNote()" style="background:#ff8000; color:#fff; margin-left:10px;">🔁 Repeat Pattern</button>
+    <button onclick="repeatCurrentVocal()" style="background:#ff8000; color:#fff; margin-left:10px;">🔁 Repeat Pattern/Note</button>
     
     <label style="display:inline-block; margin-left:15px;">Vocal Validation:
       <select id="vocalMethod" style="width:120px;">
-        <option value="single">Note-by-Note</option>
-        <option value="pattern" selected>Full Pattern</option>
+        <option value="single">One Note at a Time</option>
+        <option value="pattern">Full Pattern Back-to-Back</option>
       </select>
     </label>
     <span id="vocalStatus" style="margin-left:15px; font-weight:bold;">Mic Offline</span>
@@ -68,10 +68,7 @@
 
 <div id="generatorControls">
     <label>Lowest Note Highlighted:
-      <span class="note-select">
-        <select id='rootNoteName'></select>
-        <select id='rootNoteOctave'></select>
-      </span>
+      <span class="note-select"><select id='rootNoteName'></select><select id='rootNoteOctave'></select></span>
     </label>
     <label>Scale Type:
       <select id='scaleType'><option value='major'>Major</option><option value='minor'>Natural Minor</option></select>
@@ -119,9 +116,11 @@ populateDropdown('rootNoteName', pitchNames, 'C'); populateDropdown('rootNoteOct
 populateDropdown('rangeStartName', pitchNames, 'C'); populateDropdown('rangeStartOctave', octaves, '3');
 populateDropdown('rangeEndName', pitchNames, 'C'); populateDropdown('rangeEndOctave', octaves, '5');
 
-const piano=new Tone.Sampler({
-  urls:{'C1':'C1.mp3','C4':'C4.mp3','C7':'C7.mp3'},
-  baseUrl:'https://tonejs.github.io/audio/salamander/'
+// GITHUB SAFE SAMPLER
+const piano = new Tone.Sampler({
+  urls: { "C1": "C1.mp3", "C4": "C4.mp3", "C7": "C7.mp3", "A1": "A1.mp3", "A4": "A4.mp3" },
+  baseUrl: "https://tonejs.github.io/audio/salamander/",
+  onload: () => console.log("Piano samples ready!")
 }).toDestination();
 
 /* KEYBOARD */
@@ -144,7 +143,7 @@ keyboardDiv.style.width=(whiteCount*24)+'px';
 /* LOGIC ENGINES */
 let walkTimeouts=[]; let isPaused=false; let scheduledEvents=[]; let totalDurationMs=0;
 let playStartSystemTime=0; let playStartOffset=0; let progressInterval=null;
-let mic, analyser, vocalTargetMidi=null, vocalSequence=[], currentVocalIdx=0;
+let mic, analyser, vocalTargetMidi=null, vocalSequence=[], currentStepIdx=0, subNoteIdx=0;
 let patternChecklist = [];
 
 function noteToMidi(note){ const p={C:0,'C#':1,D:2,'D#':3,E:4,F:5,'F#':6,G:7,'G#':8,A:9,'A#':10,B:11}; const m=note.match(/^([A-G]#?)(\d)$/); return p[m[1].toUpperCase()]+(parseInt(m[2])+1)*12; }
@@ -169,11 +168,9 @@ function pitchLoop(){
     if(vocalTargetMidi){
       const method = document.getElementById('vocalMethod').value;
       const diff=midi-vocalTargetMidi; const g=document.getElementById('pitchGuide');
-      
       if(Math.abs(diff)<0.4){ 
         g.innerText="✓ Match"; g.style.color="#0f0"; 
-        if(method === 'single') validateSingleHit();
-        else validatePatternHit(Math.round(midi));
+        if(method === 'single') validateSubNoteHit(); else validateFullPatternHit(Math.round(midi));
       } else { 
         g.innerText=diff>0?"↓ Lower":"↑ Higher"; g.style.color=diff>0?"#f44":"#4af"; 
       }
@@ -182,68 +179,91 @@ function pitchLoop(){
   requestAnimationFrame(pitchLoop);
 }
 
-function validateSingleHit(){ vocalTargetMidi=null; currentVocalIdx++; if(currentVocalIdx<vocalSequence.length) setTimeout(nextVocalNote, 1200); }
+// Logic for One Note at a Time (following the pattern)
+function validateSubNoteHit(){
+  vocalTargetMidi=null;
+  subNoteIdx++;
+  const currentStep = vocalSequence[currentStepIdx];
+  if(subNoteIdx < currentStep.notes.length) {
+    setTimeout(playSubNote, 1000); // Wait 1s then play next note in pattern
+  } else {
+    // Current pattern finished, move to next range step
+    document.getElementById('pitchGuide').innerText = "✨ Step Finished!";
+    currentStepIdx++;
+    subNoteIdx = 0;
+    if(currentStepIdx < vocalSequence.length) setTimeout(nextVocalStep, 1500);
+  }
+}
 
-function validatePatternHit(midiMatched){
+// Logic for Full Pattern Match
+function validateFullPatternHit(midiMatched){
   let foundIdx = patternChecklist.findIndex(item => item.midi === midiMatched && !item.hit);
   if(foundIdx !== -1) {
     patternChecklist[foundIdx].hit = true;
     updatePatternUI();
-    // Update target to next unhit note in the list for pitch guide accuracy
     let nextNote = patternChecklist.find(item => !item.hit);
     if(nextNote) vocalTargetMidi = nextNote.midi;
   }
-  
   if(patternChecklist.every(item => item.hit)) {
     document.getElementById('pitchGuide').innerText = "✨ PATTERN MATCHED!";
-    vocalTargetMidi = null;
-    currentVocalIdx++;
-    if(currentVocalIdx < vocalSequence.length) setTimeout(nextVocalNote, 2000);
+    vocalTargetMidi = null; currentStepIdx++;
+    if(currentStepIdx < vocalSequence.length) setTimeout(nextVocalStep, 2000);
   }
 }
 
 function updatePatternUI() {
-  const list = document.getElementById('patternFeedback');
-  list.innerHTML = "";
+  const list = document.getElementById('patternFeedback'); list.innerHTML = "";
   patternChecklist.forEach(item => {
-    const li = document.createElement('li');
-    li.className = "feedback-item";
+    const li = document.createElement('li'); li.className = "feedback-item";
     li.style.color = item.hit ? "#0f0" : "#fff";
-    li.style.borderLeftColor = item.hit ? "#0f0" : "rgba(255,255,255,0.3)";
     li.innerText = (item.hit ? "✓ " : "○ ") + item.note;
     list.appendChild(li);
   });
 }
 
-function nextVocalNote(){
+function nextVocalStep(){
   const method = document.getElementById('vocalMethod').value;
-  const step = vocalSequence[currentVocalIdx]; 
+  const step = vocalSequence[currentStepIdx]; 
   if(!step) return;
 
   if(method === 'single') {
-    vocalTargetMidi = step.midi;
-    piano.triggerAttackRelease(step.note, "2n");
-    document.getElementById('vocalStatus').innerText=`Sing: ${step.note}`;
-    allKeys.forEach(k=>k.classList.remove('active'));
-    const k=allKeys.find(k=>k.dataset.note===step.note); if(k) k.classList.add('active');
+    subNoteIdx = 0; // Start at first note of pattern
+    playSubNote();
   } else {
+    // Play full pattern back-to-back
     document.getElementById('vocalStatus').innerText="Listen to Pattern...";
     patternChecklist = step.notes.map(n => ({ midi: n.midi, note: n.note, hit: false }));
     updatePatternUI();
-    
     step.notes.forEach((n, i) => {
       setTimeout(() => {
         piano.triggerAttackRelease(n.note, "4n");
-        allKeys.forEach(k=>k.classList.remove('active'));
-        const k=allKeys.find(k=>k.dataset.note===n.note); if(k) k.classList.add('active');
+        highlightKey(n.note);
       }, i * 600);
     });
-
     setTimeout(() => {
       vocalTargetMidi = step.notes[0].midi;
       document.getElementById('vocalStatus').innerText="Match all notes!";
     }, step.notes.length * 600);
   }
+}
+
+function playSubNote(){
+  const step = vocalSequence[currentStepIdx];
+  const target = step.notes[subNoteIdx];
+  vocalTargetMidi = target.midi;
+  piano.triggerAttackRelease(target.note, "2n");
+  document.getElementById('vocalStatus').innerText=`Sing: ${target.note} (Note ${subNoteIdx+1})`;
+  highlightKey(target.note);
+}
+
+function highlightKey(note) {
+  allKeys.forEach(k=>k.classList.remove('active'));
+  const k=allKeys.find(k=>k.dataset.note===note); if(k) k.classList.add('active');
+}
+
+function repeatCurrentVocal() {
+  if(!vocalSequence[currentStepIdx]) return;
+  nextVocalStep();
 }
 
 /* GENERATOR */
@@ -273,9 +293,9 @@ async function playPattern(){
     vocalSequence=[]; 
     walk.forEach(w => {
       const stepNotes = w.notes.map(n => ({ midi: n.midi, note: midiToNote(n.midi) }));
-      vocalSequence.push({ notes: stepNotes, midi: stepNotes[0].midi, note: stepNotes[0].note });
+      vocalSequence.push({ notes: stepNotes });
     });
-    currentVocalIdx=0; nextVocalNote();
+    currentStepIdx=0; nextVocalStep();
   } else {
     let time=0; let tempo=parseInt(document.getElementById('tempo').value)||400; scheduledEvents=[];
     walk.forEach((step, i)=>{
@@ -300,10 +320,11 @@ function scheduleFromOffset(offset){
     walkTimeouts.push(setTimeout(()=>{
       if(ev.type==='note'){
         piano.triggerAttackRelease(ev.note, ev.dur);
-        const k=allKeys.find(k=>k.dataset.note===ev.note); if(k){ k.classList.add('active'); setTimeout(()=>k.classList.remove('active'), 300); }
+        highlightKey(ev.note); setTimeout(()=>allKeys.forEach(k=>k.classList.remove('active')), 300);
       } else {
         piano.triggerAttackRelease(ev.notes, ev.dur);
-        ev.notes.forEach(n=>{ const k=allKeys.find(k=>k.dataset.note===n); if(k){ k.classList.add('active'); setTimeout(()=>k.classList.remove('active'), 600); } });
+        ev.notes.forEach(n=>{ const k=allKeys.find(k=>k.dataset.note===n); if(k) k.classList.add('active'); });
+        setTimeout(()=>allKeys.forEach(k=>k.classList.remove('active')), 600);
       }
     }, ev.time-offset));
   });
@@ -321,4 +342,3 @@ function resumePattern(){ isPaused=false; scheduleFromOffset(parseInt(document.g
 </script>
 </body>
 </html>
-
