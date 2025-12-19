@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'>
+<title>Piano Pattern Exercise Generator</title>
+<script src='https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js'></script>
+<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.min.js"></script>
+<style>
+  /* --- EXACT OG CSS --- */
+  body { font-family: Arial, sans-serif; padding: 15px; background: linear-gradient(135deg,#6a0dad,#4b0082); color: #fff; }
+  label{ display:block; margin:8px 0; font-weight:bold; }
+  select,input,button{ margin-top:4px; padding:6px; font-size:14px; border-radius:4px; border:none; }
+  input,select{ width:150px; }
+  button{ margin-top:12px; background:#00f; color:#fff; cursor:pointer; font-weight:bold; }
+  button:hover{ background:#0080ff; }
+  h3{ text-align:center; }
+
+  .note-select { display: inline-flex; gap: 6px; }
+  .note-select select { width: auto; }
+
+  #keyboard{ display:flex; margin-top:15px; justify-content:flex-start; position:relative; height:120px; }
+  .key{ width:24px; height:120px; margin:1px; border:1px solid #000; border-radius:3px; position:absolute; background:white; transition: background 0.1s; }
+  .key.black{ width:16px; height:80px; background:black; position:absolute; top:0; z-index:2; }
+  .active{ background:#ff0 !important; }
+  
+  /* VOCAL FEEDBACK STYLES */
+  .match-glow { background: #0ff !important; box-shadow: 0 0 15px #0ff; z-index: 10; }
+  .vocal-ui-box { border: 1px solid #0ff; padding: 10px; margin-bottom: 15px; background: rgba(0,255,255,0.1); border-radius: 4px; }
+  .hidden { display: none; }
+
+  /* timeline UI */
+  #timelineContainer { margin-top: 35px; position: relative; width: 100%; max-width: 880px; }
+  #timeline { width: calc(100% - 140px); vertical-align: middle; }
+  #timeLabel { display:inline-block; width:120px; text-align:left; margin-left:8px; font-weight:normal; }
+  
+  /* MIDI controls matched to OG */
+  .inline-controls { display:flex; gap:20px; align-items:flex-end; margin-top:15px; border-top: 1px solid rgba(255,255,255,0.2); padding-top:15px; }
+  #midiFileInput { width:250px; background:#fff; color:#000; }
+</style>
+</head>
+<body>
+<h3>Piano Pattern Generator & Vocal Trainer</h3>
+
+<div class="vocal-ui-box">
+  <label>System Mode: 
+    <select id="mainMode" onchange="toggleMode()" style="width: 200px;">
+      <option value="gen">Generator / MIDI</option>
+      <option value="vocal">Vocal Trainer (Mic)</option>
+    </select>
+  </label>
+  <div id="vocalControls" class="hidden">
+    <button onclick="initMic()" style="background:#0ff; color:#000;">🎤 Enable Microphone</button>
+    <span id="vocalStatus" style="margin-left:15px; font-weight:bold;">Mic Offline</span>
+    <div id="pitchGuide" style="margin-top:5px; color:#0ff; font-size:18px;">--</div>
+  </div>
+</div>
+
+<div id="generatorControls">
+    <label>Lowest Note Highlighted:
+      <span class="note-select">
+        <select id='rootNoteName'></select>
+        <select id='rootNoteOctave'></select>
+      </span>
+    </label>
+
+    <label>Scale Type:
+      <select id='scaleType'>
+        <option value='major'>Major</option>
+        <option value='minor'>Natural Minor</option>
+      </select>
+    </label>
+
+    <label>Pattern (degrees): <input id='pattern' value='1,3,5'></label>
+
+    <label>Lowest Note:
+      <span class="note-select">
+        <select id='rangeStartName'></select>
+        <select id='rangeStartOctave'></select>
+      </span>
+    </label>
+
+    <label>Highest Note:
+      <span class="note-select">
+        <select id='rangeEndName'></select>
+        <select id='rangeEndOctave'></select>
+      </span>
+    </label>
+
+    <label>Loop Mode:<select id='loopMode'><option value='bounce'>Bounce Forever</option><option value='once'>One Loop</option></select></label>
+    <label>Tempo (ms): <input id='tempo' type='number' value='400'></label>
+
+    <div class="inline-controls">
+      <div>
+        <label>Upload MIDI:</label>
+        <input id="midiFileInput" type="file" accept=".mid,.midi" />
+      </div>
+      <button id="clearMidiBtn" style="background:#8000ff;">Clear MIDI</button>
+      <div>
+        <label>MIDI BPM: <span id="tempoValue">120</span></label>
+        <input id="tempoSlider" type="range" min="40" max="240" value="120" />
+      </div>
+    </div>
+</div>
+
+<button onclick='playPattern()'>Play</button>
+<button onclick='pausePattern()'>Pause</button>
+<button onclick='resumePattern()'>Resume</button>
+<button onclick='stopPattern()'>Stop</button>
+
+<div id="timelineContainer">
+  <input id="timeline" type="range" min="0" max="0" step="50" value="0">
+  <span id="timeLabel">00:00 / 00:00</span>
+</div>
+
+<div id='keyboard'></div>
+
+<script>
+const pitchNames=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const octaves=[2,3,4,5,6,7];
+const scales={ major:[0,2,4,5,7,9,11], minor:[0,2,3,5,7,8,10] };
+
+function populateDropdown(id, arr, def){
+  const s=document.getElementById(id);
+  arr.forEach(val=>{
+    const opt=document.createElement('option');
+    opt.value=val; opt.text=val; if(val==def) opt.selected=true;
+    s.appendChild(opt);
+  });
+}
+
+populateDropdown('rootNoteName', pitchNames, 'C'); populateDropdown('rootNoteOctave', octaves, '4');
+populateDropdown('rangeStartName', pitchNames, 'C'); populateDropdown('rangeStartOctave', octaves, '3');
+populateDropdown('rangeEndName', pitchNames, 'C'); populateDropdown('rangeEndOctave', octaves, '5');
+
+const piano=new Tone.Sampler({
+  urls:{'C1':'C1.mp3','C4':'C4.mp3','C7':'C7.mp3'},
+  baseUrl:'https://tonejs.github.io/audio/salamander/'
+}).toDestination();
+
+/* KEYBOARD */
+const keyboardDiv = document.getElementById('keyboard');
+const allKeys = [];
+let whiteCount = 0;
+for(let o=2; o<=7; o++){
+  ['C','D','E','F','G','A','B'].forEach(w => {
+    const wk = document.createElement('div'); wk.className='key'; wk.dataset.note = w+o; wk.style.left=(whiteCount*24)+'px';
+    keyboardDiv.appendChild(wk); allKeys.push(wk);
+    if(['C','D','F','G','A'].includes(w)){
+      const bk = document.createElement('div'); bk.className='key black'; bk.dataset.note = w+'#'+o; bk.style.left=(whiteCount*24+16)+'px';
+      keyboardDiv.appendChild(bk); allKeys.push(bk);
+    }
+    whiteCount++;
+  });
+}
+keyboardDiv.style.width=(whiteCount*24)+'px';
+
+/* CORE LOGIC */
+let walkTimeouts=[]; let isPaused=false; let scheduledEvents=[]; let totalDurationMs=0;
+let playStartSystemTime=0; let playStartOffset=0; let progressInterval=null;
+let mic, analyser, vocalTargetMidi=null, vocalSequence=[], currentVocalIdx=0;
+
+function noteToMidi(note){ const p={C:0,'C#':1,D:2,'D#':3,E:4,F:5,'F#':6,G:7,'G#':8,A:9,'A#':10,B:11}; const m=note.match(/^([A-G]#?)(\d)$/); return p[m[1].toUpperCase()]+(parseInt(m[2])+1)*12; }
+function midiToNote(midi){ return pitchNames[midi%12]+(Math.floor(midi/12)-1); }
+function toggleMode(){ document.getElementById('vocalControls').classList.toggle('hidden', document.getElementById('mainMode').value !== 'vocal'); }
+
+async function initMic(){
+  await Tone.start(); mic=new Tone.UserMedia(); analyser=new Tone.Analyser("fft", 4096);
+  try { await mic.open(); mic.connect(analyser); document.getElementById('vocalStatus').innerText="🎤 Active"; pitchLoop(); } catch(e){ alert("Mic error"); }
+}
+
+function pitchLoop(){
+  if(!analyser) return;
+  const buf=analyser.getValue(); let max=-Infinity, idx=-1;
+  for(let i=0; i<buf.length; i++){ if(buf[i]>max){max=buf[i]; idx=i;} }
+  const freq=idx*(Tone.context.sampleRate/2/buf.length);
+  if(freq>60){
+    const midi=12*Math.log2(freq/440)+69; const note=midiToNote(Math.round(midi));
+    allKeys.forEach(k=>k.classList.remove('match-glow'));
+    const key=allKeys.find(k=>k.dataset.note===note); if(key) key.classList.add('match-glow');
+    if(vocalTargetMidi){
+      const diff=midi-vocalTargetMidi; const g=document.getElementById('pitchGuide');
+      if(Math.abs(diff)<0.4){ g.innerText="✓ Match"; g.style.color="#0f0"; validateHit(); }
+      else { g.innerText=diff>0?"↓ Lower":"↑ Higher"; g.style.color=diff>0?"#f44":"#4af"; }
+    }
+  }
+  requestAnimationFrame(pitchLoop);
+}
+
+function generateWalk(rs, re, st, dl, lm){
+  const sequence=[]; let asc=true; let root=rs; const steps=scales[st];
+  while(sequence.length<100){
+    const notes=[]; dl.forEach(d=>{ const off=steps[(d.degree-1)%7]+Math.floor((d.degree-1)/7)*12+d.accidental; notes.push({midi:root+off, dashes:d.dashes}); });
+    if(notes.some(n=>n.midi>=rs && n.midi<=re)) sequence.push({notes});
+    const max=Math.max(...notes.map(n=>n.midi)); const min=Math.min(...notes.map(n=>n.midi));
+    if(asc){ if(max>=re){asc=false; root--;} else root++; }
+    else { if(min<=rs){ if(lm==='once') break; asc=true; root++; } else root--; }
+  }
+  return sequence;
+}
+
+async function playPattern(){
+  await Tone.start(); stopPattern();
+  const rs=noteToMidi(document.getElementById('rangeStartName').value+document.getElementById('rangeStartOctave').value);
+  const re=noteToMidi(document.getElementById('rangeEndName').value+document.getElementById('rangeEndOctave').value);
+  const patternInput=document.getElementById('pattern').value.split(',').map(s=>{
+    let acc=0; if(s.trim()[0]==='b') acc=-1; else if(s.trim()[0]==='#') acc=1;
+    return { degree:parseInt(s.replace(/[^\d]/g,'')), accidental:acc, dashes:(s.match(/-/g)||[]).length };
+  });
+  const walk=generateWalk(rs, re, document.getElementById('scaleType').value, patternInput, document.getElementById('loopMode').value);
+
+  if(document.getElementById('mainMode').value==='vocal'){
+    vocalSequence=[]; walk.forEach(w=>w.notes.forEach(n=>vocalSequence.push({midi:n.midi, note:midiToNote(n.midi)})));
+    currentVocalIdx=0; nextVocalNote();
+  } else {
+    // Normal Generator logic with Vamps
+    let time=0; let tempo=parseInt(document.getElementById('tempo').value)||400; scheduledEvents=[];
+    walk.forEach((step, i)=>{
+        step.notes.forEach(vn=>{
+            const n=midiToNote(vn.midi); let ms=vn.dashes>0?(1400*vn.dashes):tempo;
+            scheduledEvents.push({type:'note', time, note:n, dur:ms/1000+"s"}); time+=ms+(vn.dashes>0?500:0);
+        });
+        if(walk[i+1]){
+            const s=[...walk[i+1].notes].sort((a,b)=>a.midi-b.midi);
+            const v=[s[0].midi, s[Math.floor(s.length/2)].midi, s[s.length-1].midi].map(m=>midiToNote(m));
+            scheduledEvents.push({type:'vamp', time:time+800, notes:v, dur:0.7}); time+=2300;
+        }
+    });
+    totalDurationMs=time; document.getElementById('timeline').max=time; scheduleFromOffset(0);
+  }
+}
+
+function nextVocalNote(){
+  const target=vocalSequence[currentVocalIdx]; if(!target) return;
+  vocalTargetMidi=target.midi; piano.triggerAttackRelease(target.note, "2n");
+  document.getElementById('vocalStatus').innerText=`Sing: ${target.note}`;
+  allKeys.forEach(k=>k.classList.remove('active'));
+  const k=allKeys.find(k=>k.dataset.note===target.note); if(k) k.classList.add('active');
+}
+
+function validateHit(){ vocalTargetMidi=null; currentVocalIdx++; if(currentVocalIdx<vocalSequence.length) setTimeout(nextVocalNote, 1200); }
+
+function scheduleFromOffset(offset){
+  playStartSystemTime=Date.now(); playStartOffset=offset;
+  scheduledEvents.forEach(ev=>{
+    if(ev.time < offset) return;
+    walkTimeouts.push(setTimeout(()=>{
+      if(ev.type==='note'){
+        piano.triggerAttackRelease(ev.note, ev.dur);
+        const k=allKeys.find(k=>k.dataset.note===ev.note); if(k){ k.classList.add('active'); setTimeout(()=>k.classList.remove('active'), 300); }
+      } else {
+        piano.triggerAttackRelease(ev.notes, ev.dur);
+        ev.notes.forEach(n=>{ const k=allKeys.find(k=>k.dataset.note===n); if(k){ k.classList.add('active'); setTimeout(()=>k.classList.remove('active'), 600); } });
+      }
+    }, ev.time-offset));
+  });
+  progressInterval=setInterval(()=>{
+    const cur=Date.now()-playStartSystemTime+playStartOffset;
+    document.getElementById('timeline').value=cur;
+    document.getElementById('timeLabel').innerText=Math.floor(cur/1000)+"s / "+Math.floor(totalDurationMs/1000)+"s";
+    if(cur>=totalDurationMs) stopPattern();
+  },100);
+}
+
+function stopPattern(){ walkTimeouts.forEach(clearTimeout); walkTimeouts=[]; clearInterval(progressInterval); allKeys.forEach(k=>k.classList.remove('active')); vocalTargetMidi=null; }
+function pausePattern(){ isPaused=true; walkTimeouts.forEach(clearTimeout); clearInterval(progressInterval); }
+function resumePattern(){ isPaused=false; scheduleFromOffset(parseInt(document.getElementById('timeline').value)); }
+</script>
+</body>
+</html>
